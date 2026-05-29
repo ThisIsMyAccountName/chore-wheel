@@ -14,4 +14,4 @@ type: custom:chore-wheel-card
 entity: todo.chores
 ```
 
-See the [README](https://github.com/simand123/chore-wheel-ha) for full setup.
+See the [README](https://github.com/ThisIsMyAccountName/chore-wheel) for full setup.

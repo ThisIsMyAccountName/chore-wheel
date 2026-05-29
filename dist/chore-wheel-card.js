@@ -6,7 +6,7 @@
  * No build step required. Drop into HA as a Lovelace resource.
  */
 
-const CARD_VERSION = "1.0.0";
+const CARD_VERSION = "1.1.0";
 
 const DEFAULT_PALETTE = [
   "#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4",
@@ -19,7 +19,33 @@ const mod2pi = (a) => {
   return ((a % t) + t) % t;
 };
 
-const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+/**
+ * Returns an easing function for the given cubic-bezier control points
+ * (same maths the browser uses for CSS `cubic-bezier`). Solved with
+ * Newton-Raphson, good enough for animation.
+ */
+const cubicBezier = (x1, y1, x2, y2) => {
+  const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+  const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+  const sampleX = (t) => ((ax * t + bx) * t + cx) * t;
+  const sampleY = (t) => ((ay * t + by) * t + cy) * t;
+  const sampleDX = (t) => (3 * ax * t + 2 * bx) * t + cx;
+  const solveX = (x) => {
+    let t = x;
+    for (let i = 0; i < 8; i++) {
+      const dx = sampleX(t) - x;
+      if (Math.abs(dx) < 1e-6) break;
+      const d = sampleDX(t);
+      if (Math.abs(d) < 1e-6) break;
+      t -= dx / d;
+    }
+    return Math.max(0, Math.min(1, t));
+  };
+  return (x) => sampleY(solveX(x));
+};
+
+// Gentle inertia ramp at the start, long slow settle at the end → suspense.
+const SPIN_EASE = cubicBezier(0.2, 0.0, 0.08, 1.0);
 
 class ChoreWheelCard extends HTMLElement {
   constructor() {
@@ -36,6 +62,9 @@ class ChoreWheelCard extends HTMLElement {
     this._winner = null;     // currently displayed result segment
     this._size = 320;
     this._domReady = false;
+    this._colorMap = {};     // uid -> color, stable across removals
+    this._confetti = [];
+    this._confAnim = null;
   }
 
   /* ------------------------------------------------------------------ */
@@ -108,6 +137,7 @@ class ChoreWheelCard extends HTMLElement {
   disconnectedCallback() {
     if (this._ro) this._ro.disconnect();
     if (this._raf) cancelAnimationFrame(this._raf);
+    if (this._confAnim) cancelAnimationFrame(this._confAnim);
   }
 
   /* ------------------------------------------------------------------ */
@@ -139,15 +169,22 @@ class ChoreWheelCard extends HTMLElement {
         max-width: 420px;
         aspect-ratio: 1 / 1;
       }
-      canvas { width: 100%; height: 100%; display: block; cursor: pointer; }
+      canvas.wheel { width: 100%; height: 100%; display: block; cursor: pointer; }
+      canvas.confetti {
+        position: absolute;
+        inset: 0;
+        width: 100%; height: 100%;
+        pointer-events: none;
+        z-index: 3;
+      }
       .pointer {
         position: absolute;
-        top: -2px; left: 50%;
-        transform: translateX(-50%);
+        top: 50%; right: -4px;
+        transform: translateY(-50%);
         width: 0; height: 0;
-        border-left: 16px solid transparent;
-        border-right: 16px solid transparent;
-        border-top: 26px solid var(--error-color, #d32f2f);
+        border-top: 16px solid transparent;
+        border-bottom: 16px solid transparent;
+        border-right: 28px solid var(--error-color, #d32f2f);
         filter: drop-shadow(0 2px 2px rgba(0,0,0,.4));
         z-index: 2;
         pointer-events: none;
@@ -210,7 +247,8 @@ class ChoreWheelCard extends HTMLElement {
       <div class="error"></div>
       <div class="wrap">
         <div class="pointer"></div>
-        <canvas></canvas>
+        <canvas class="wheel"></canvas>
+        <canvas class="confetti"></canvas>
       </div>
       <button class="spin-btn" type="button">Spin the wheel</button>
       <div class="result">
@@ -225,8 +263,10 @@ class ChoreWheelCard extends HTMLElement {
     this._titleEl = card.querySelector(".title");
     this._errorEl = card.querySelector(".error");
     this._wrap = card.querySelector(".wrap");
-    this._canvas = card.querySelector("canvas");
+    this._canvas = card.querySelector("canvas.wheel");
     this._ctx = this._canvas.getContext("2d");
+    this._confCanvas = card.querySelector("canvas.confetti");
+    this._confCtx = this._confCanvas.getContext("2d");
     this._spinBtn = card.querySelector(".spin-btn");
     this._resultEl = card.querySelector(".result");
     this._choreEl = card.querySelector(".chore");
@@ -279,14 +319,10 @@ class ChoreWheelCard extends HTMLElement {
       this._needsRefresh = true;
       return;
     }
-    const palette = (this._config.colors && this._config.colors.length)
-      ? this._config.colors
-      : DEFAULT_PALETTE;
-    this._segments = this._items.map((it, i) => ({
-      name: it.summary || "(untitled)",
-      uid: it.uid || it.summary,
-      color: palette[i % palette.length],
-    }));
+    this._segments = this._items.map((it) => {
+      const uid = it.uid || it.summary;
+      return { name: it.summary || "(untitled)", uid, color: this._colorFor(uid) };
+    });
 
     // If the displayed winner is gone, clear it.
     if (this._winner && !this._segments.some((s) => s.uid === this._winner.uid)) {
@@ -306,6 +342,8 @@ class ChoreWheelCard extends HTMLElement {
     const dpr = window.devicePixelRatio || 1;
     this._canvas.width = Math.round(w * dpr);
     this._canvas.height = Math.round(w * dpr);
+    this._confCanvas.width = Math.round(w * dpr);
+    this._confCanvas.height = Math.round(w * dpr);
     this._draw();
   }
 
@@ -397,6 +435,21 @@ class ChoreWheelCard extends HTMLElement {
     return t + "…";
   }
 
+  _colorFor(uid) {
+    if (this._colorMap[uid]) return this._colorMap[uid];
+    const palette = (this._config.colors && this._config.colors.length)
+      ? this._config.colors
+      : DEFAULT_PALETTE;
+    // Stable hash of the uid → palette index, so a task keeps its colour for
+    // life and removing one never reshuffles the others.
+    const s = String(uid);
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    const color = palette[h % palette.length];
+    this._colorMap[uid] = color;
+    return color;
+  }
+
   _contrastColor(hex) {
     const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
     if (!m) return "#fff";
@@ -419,24 +472,19 @@ class ChoreWheelCard extends HTMLElement {
 
     if (n === 1) {
       this._setResult(this._segments[0]);
+      this._burstConfetti();
       return;
     }
 
     this._spinning = true;
     this._spinBtn.disabled = true;
 
-    const w = Math.floor(Math.random() * n);
-    const segAngle = (2 * Math.PI) / n;
-    const baseCenter = (w + 0.5) * segAngle;
-    const pointerAngle = -Math.PI / 2; // top
-    const desired = mod2pi(pointerAngle - baseCenter);
-    const current = mod2pi(this._rotation);
-    const align = mod2pi(desired - current);
-    // 5–7 full turns, plus a small in-segment jitter so it doesn't always
-    // stop dead-centre (kept well within the segment so the winner is stable).
+    // 5–7 full turns plus a uniformly random landing angle — the wheel can
+    // stop anywhere, including near a slice edge, instead of being snapped to
+    // a slice centre. The easing does the rest of the suspense.
     const spins = 5 + Math.floor(Math.random() * 3);
-    const jitter = (Math.random() - 0.5) * segAngle * 0.5;
-    const totalDelta = spins * 2 * Math.PI + align + jitter;
+    const extra = Math.random() * 2 * Math.PI;
+    const totalDelta = spins * 2 * Math.PI + extra;
 
     const start = this._rotation;
     const duration = Math.max(1, this._config.spin_duration || 5) * 1000;
@@ -444,7 +492,7 @@ class ChoreWheelCard extends HTMLElement {
 
     const step = (now) => {
       const t = Math.min(1, (now - t0) / duration);
-      this._rotation = start + totalDelta * easeOutCubic(t);
+      this._rotation = start + totalDelta * SPIN_EASE(t);
       this._draw();
       if (t < 1) {
         this._raf = requestAnimationFrame(step);
@@ -452,7 +500,8 @@ class ChoreWheelCard extends HTMLElement {
         this._rotation = mod2pi(start + totalDelta);
         this._spinning = false;
         this._draw();
-        this._setResult(this._segments[w]);
+        this._setResult(this._segments[this._winnerAt(this._rotation)]);
+        this._burstConfetti();
         if (this._needsRefresh) {
           this._needsRefresh = false;
           this._buildSegments();
@@ -460,6 +509,80 @@ class ChoreWheelCard extends HTMLElement {
       }
     };
     this._raf = requestAnimationFrame(step);
+  }
+
+  // Which slice sits under the pointer (right edge, angle 0) at this rotation.
+  _winnerAt(rot) {
+    const n = this._segments.length;
+    const segAngle = (2 * Math.PI) / n;
+    const local = mod2pi(0 - rot); // pointer is at canvas angle 0 (3 o'clock)
+    return Math.floor(local / segAngle) % n;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Confetti                                                           */
+  /* ------------------------------------------------------------------ */
+
+  _burstConfetti() {
+    const palette = (this._config.colors && this._config.colors.length)
+      ? this._config.colors
+      : DEFAULT_PALETTE;
+    const size = this._size;
+    const cx = size / 2;
+    const cy = size / 2;
+    const count = 90;
+    for (let i = 0; i < count; i++) {
+      const ang = Math.random() * 2 * Math.PI;
+      const speed = 2 + Math.random() * 7;
+      this._confetti.push({
+        x: cx,
+        y: cy,
+        vx: Math.cos(ang) * speed,
+        vy: Math.sin(ang) * speed - 3, // slight upward bias
+        size: 4 + Math.random() * 6,
+        color: palette[Math.floor(Math.random() * palette.length)],
+        rot: Math.random() * Math.PI * 2,
+        vr: (Math.random() - 0.5) * 0.35,
+        life: 1,
+      });
+    }
+    if (!this._confAnim) this._animateConfetti();
+  }
+
+  _animateConfetti() {
+    const ctx = this._confCtx;
+    const size = this._size;
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, size, size);
+
+    const gravity = 0.16;
+    let alive = false;
+    for (const p of this._confetti) {
+      if (p.life <= 0) continue;
+      p.vy += gravity;
+      p.vx *= 0.99;
+      p.x += p.vx;
+      p.y += p.vy;
+      p.rot += p.vr;
+      p.life -= 0.012;
+      if (p.life > 0 && p.y < size + 30) alive = true;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, p.life));
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.6);
+      ctx.restore();
+    }
+
+    if (alive) {
+      this._confAnim = requestAnimationFrame(() => this._animateConfetti());
+    } else {
+      this._confAnim = null;
+      this._confetti = [];
+      ctx.clearRect(0, 0, size, size);
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -579,7 +702,7 @@ window.customCards.push({
   name: "Chore Wheel Card",
   description: "A spinning carnival wheel that picks a chore from a todo list.",
   preview: false,
-  documentationURL: "https://github.com/simand123/chore-wheel-ha",
+  documentationURL: "https://github.com/ThisIsMyAccountName/chore-wheel",
 });
 
 console.info(

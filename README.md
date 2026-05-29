@@ -7,7 +7,7 @@ list into a game. The wheel is built from a Home Assistant **`todo` list**:
 hit **Spin**, watch the wheel land on a chore, then tap **Mark done** to strike
 it off the list.
 
-![chore wheel](https://raw.githubusercontent.com/simand123/chore-wheel-ha/main/.github/preview.png)
+![chore wheel](https://raw.githubusercontent.com/ThisIsMyAccountName/chore-wheel/main/.github/preview.png)
 
 ---
 
@@ -44,7 +44,7 @@ Any integration that provides a `todo` entity works.
 This is a **custom repository** until it is added to the default HACS store.
 
 1. In Home Assistant go to **HACS → ⋮ (top right) → Custom repositories**.
-2. Add `https://github.com/simand123/chore-wheel-ha` with category **Dashboard**.
+2. Add `https://github.com/ThisIsMyAccountName/chore-wheel` with category **Dashboard**.
 3. Search for **Chore Wheel Card**, install it.
 4. HACS adds the Lovelace resource automatically. (If not, add the resource
    below.)
