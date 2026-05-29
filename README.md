@@ -78,7 +78,7 @@ title: Chore Wheel           # heading shown above the wheel
 spin_duration: 5             # seconds the spin animation runs (1–20)
 strike_action: complete      # "complete" (mark done) or "remove" (delete item)
 show_completed: false        # also include already-completed items on the wheel
-color_family: rainbow        # rainbow | warm | cool | pastel | earth
+color_family: rainbow        # classic | rainbow | warm | cool | pastel | earth
 quick_chores:                # one-tap chips that add a chore to the list
   - Dishes
   - Vacuum
@@ -98,7 +98,7 @@ colors:                      # optional custom palette — overrides color_famil
 | `spin_duration`  | number   | `5`            | Length of the spin animation in seconds.                          |
 | `strike_action`  | string   | `complete`     | What "Mark done" does: `complete` (mark item done) or `remove`.   |
 | `show_completed` | boolean  | `false`        | Include completed items on the wheel as well.                     |
-| `color_family`   | string   | `rainbow`      | Built-in palette: `rainbow`, `warm`, `cool`, `pastel` or `earth`. |
+| `color_family`   | string   | `rainbow`      | Built-in palette: `classic`, `rainbow`, `warm`, `cool`, `pastel` or `earth`. |
 | `quick_chores`   | list     | `[]`           | Chore labels shown as one-tap chips that add the chore to the list.|
 | `colors`         | list     | built-in       | Custom hex palette, cycled in order. Overrides `color_family`.    |
 

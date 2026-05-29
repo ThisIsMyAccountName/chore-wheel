@@ -11,6 +11,10 @@ const CARD_VERSION = "1.2.0";
 // Named colour families the user can pick from in the editor. `colors` (a
 // custom hex list) still overrides whatever family is chosen.
 const COLOR_FAMILIES = {
+  // Six standard primary/secondary colours.
+  classic: [
+    "#e53935", "#1e88e5", "#fdd835", "#43a047", "#fb8c00", "#8e24aa",
+  ],
   rainbow: [
     "#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4",
     "#42d4f4", "#f032e6", "#bfef45", "#fabed4", "#469990",
@@ -739,7 +743,7 @@ class ChoreWheelCardEditor extends HTMLElement {
 
   _render() {
     if (this._form) {
-      this._form.data = this._config;
+      this._form.data = this._toFormData(this._config);
       return;
     }
     this._form = document.createElement("ha-form");
@@ -769,6 +773,7 @@ class ChoreWheelCardEditor extends HTMLElement {
           select: {
             mode: "dropdown",
             options: [
+              { value: "classic", label: "Classic" },
               { value: "rainbow", label: "Rainbow" },
               { value: "warm", label: "Warm" },
               { value: "cool", label: "Cool" },
@@ -778,7 +783,10 @@ class ChoreWheelCardEditor extends HTMLElement {
           },
         },
       },
-      { name: "quick_chores", selector: { text: { multiple: true } } },
+      // One chore per line. A multiline text field keeps focus across the
+      // form's re-renders; the `multiple` text selector recreates its inputs
+      // on every keystroke and steals focus, so we convert lines <-> array.
+      { name: "quick_chores", selector: { text: { multiline: true } } },
     ];
     this._form.computeLabel = (s) => {
       const labels = {
@@ -792,18 +800,34 @@ class ChoreWheelCardEditor extends HTMLElement {
       };
       return labels[s.name] || s.name;
     };
-    this._form.data = this._config;
+    this._form.computeHelper = (s) =>
+      s.name === "quick_chores" ? "One chore per line" : undefined;
+    this._form.data = this._toFormData(this._config);
     if (this._hass) this._form.hass = this._hass;
     this._form.addEventListener("value-changed", (ev) => {
+      const value = { ...ev.detail.value };
+      if (typeof value.quick_chores === "string") {
+        value.quick_chores = value.quick_chores
+          .split("\n")
+          .map((c) => c.trim())
+          .filter(Boolean);
+      }
       this.dispatchEvent(
         new CustomEvent("config-changed", {
-          detail: { config: ev.detail.value },
+          detail: { config: value },
           bubbles: true,
           composed: true,
         })
       );
     });
     this.appendChild(this._form);
+  }
+
+  // The form edits quick_chores as a newline-joined string; everything else
+  // passes through unchanged.
+  _toFormData(config) {
+    const chores = Array.isArray(config?.quick_chores) ? config.quick_chores : [];
+    return { ...config, quick_chores: chores.join("\n") };
   }
 }
 
