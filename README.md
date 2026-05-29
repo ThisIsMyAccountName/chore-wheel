@@ -1,6 +1,7 @@
 # 🎡 Chore Wheel Card
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![version](https://img.shields.io/badge/version-1.2.0-03a9f4.svg)](https://github.com/ThisIsMyAccountName/chore-wheel/releases)
 
 A carnival-style **spinning wheel** for Home Assistant that turns your chore
 list into a game. The wheel is built from a Home Assistant **`todo` list**:
@@ -16,7 +17,9 @@ it off the list.
 - 🎯 Reads chores live from any `todo.*` entity (Local To-do, Shopping List, etc.)
 - 🎡 Smooth, weighted-fair carnival wheel with a real spin animation
 - ✅ "Mark done" button completes (or removes) the chosen item from the list
-- ➕ One-tap **quick-add chips** to drop common chores onto the wheel
+- ➕ One-tap **quick-add chips** to drop common chores onto the wheel (greyed out
+  when the chore is already on the list, so it never appears twice)
+- 🗑️ **Manage chores** panel to remove any chore from the list
 - 🔄 Auto-updates when the todo list changes
 - 🎨 Colour families (or a custom palette), customisable title and spin duration
 - 🖱️ Visual config editor — no YAML required
@@ -115,7 +118,11 @@ colors:                      # optional custom palette — overrides color_famil
   `todo.remove_item`, then re-reads the list — so the finished chore drops off
   the wheel.
 - **Quick-add chips** call `todo.add_item` with the chip's label, then re-read
-  the list — so the new chore appears on the wheel immediately.
+  the list — so the new chore appears on the wheel immediately. A chip is greyed
+  out (and won't add again) while a matching chore — comparing names
+  case-insensitively — is already on the list.
+- **Manage chores** lists the current chores; the ✕ button calls
+  `todo.remove_item` and re-reads the list, dropping the chore off the wheel.
 
 ---
 

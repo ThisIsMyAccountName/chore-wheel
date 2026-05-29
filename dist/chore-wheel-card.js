@@ -91,6 +91,7 @@ class ChoreWheelCard extends HTMLElement {
     this._colorMap = {};     // uid -> color, stable across removals
     this._confetti = [];
     this._confAnim = null;
+    this._listNames = new Set(); // lowercased summaries currently on the list
   }
 
   /* ------------------------------------------------------------------ */
@@ -290,6 +291,51 @@ class ChoreWheelCard extends HTMLElement {
       }
       .error.show { display: block; }
       .empty { color: var(--secondary-text-color); text-align: center; }
+      .manage-btn {
+        display: none;
+        background: transparent;
+        color: var(--secondary-text-color);
+        border: none;
+        cursor: pointer;
+        font-size: .9em;
+        text-decoration: underline;
+        padding: 2px 6px;
+      }
+      .manage {
+        display: none;
+        flex-direction: column;
+        gap: 6px;
+        width: 100%;
+        max-width: 420px;
+      }
+      .manage.show { display: flex; }
+      .manage-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 8px 6px 14px;
+        border-radius: 8px;
+        background: var(--secondary-background-color, #f1f1f1);
+      }
+      .manage-row .name {
+        flex: 1;
+        text-align: left;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .del-btn {
+        background: transparent;
+        border: none;
+        color: var(--error-color, #d32f2f);
+        cursor: pointer;
+        font-size: 1.2em;
+        line-height: 1;
+        padding: 2px 8px;
+        border-radius: 6px;
+      }
+      .del-btn:hover:not(:disabled) { background: rgba(0,0,0,.08); }
+      .del-btn:disabled { opacity: .5; cursor: default; }
     `;
 
     const card = document.createElement("ha-card");
@@ -308,6 +354,8 @@ class ChoreWheelCard extends HTMLElement {
         <div class="chore"></div>
         <button class="done-btn" type="button">✓ Mark done</button>
       </div>
+      <button class="manage-btn" type="button">Manage chores</button>
+      <div class="manage"></div>
     `;
 
     this.shadowRoot.append(style, card);
@@ -324,16 +372,22 @@ class ChoreWheelCard extends HTMLElement {
     this._resultEl = card.querySelector(".result");
     this._choreEl = card.querySelector(".chore");
     this._doneBtn = card.querySelector(".done-btn");
+    this._manageBtn = card.querySelector(".manage-btn");
+    this._manageEl = card.querySelector(".manage");
 
     this._titleEl.textContent = this._config?.title || "";
 
     this._spinBtn.addEventListener("click", () => this._spin());
     this._canvas.addEventListener("click", () => this._spin());
     this._doneBtn.addEventListener("click", () => this._strike());
+    this._manageBtn.addEventListener("click", () => {
+      this._manageEl.classList.toggle("show");
+    });
 
     this._ro = new ResizeObserver(() => this._resize());
     this._domReady = true;
     this._renderQuickAdd();
+    this._renderManage();
     this._resize();
   }
 
@@ -359,10 +413,18 @@ class ChoreWheelCard extends HTMLElement {
         entity_id: this._config.entity,
       });
       const items = (res && res.items) || [];
+      // Track every summary on the list (completed or not) so quick-add chips
+      // can be disabled for chores that already exist.
+      this._listNames = new Set(
+        items
+          .map((i) => String(i.summary || "").trim().toLowerCase())
+          .filter(Boolean)
+      );
       this._items = this._config.show_completed
         ? items
         : items.filter((i) => i.status !== "completed");
       this._buildSegments();
+      this._updateQuickAddState();
     } catch (err) {
       this._showError(`Could not load items: ${err.message || err}`);
     }
@@ -373,15 +435,34 @@ class ChoreWheelCard extends HTMLElement {
       this._needsRefresh = true;
       return;
     }
-    this._segments = this._items.map((it) => {
+    const palette = this._palette();
+    const n = this._items.length;
+    const segs = [];
+    for (let i = 0; i < n; i++) {
+      const it = this._items[i];
       const uid = it.uid || it.summary;
-      return { name: it.summary || "(untitled)", uid, color: this._colorFor(uid) };
-    });
+      // Keep an already-assigned colour so an existing chore never changes
+      // colour (and removing one never reshuffles the rest).
+      let color = this._colorMap[uid];
+      if (!color) {
+        // Avoid the previous slice's colour, and for the last slice the
+        // wrap-around first slice too, so a freshly added chore doesn't land
+        // next to a matching colour.
+        const avoid = new Set();
+        if (segs.length) avoid.add(segs[segs.length - 1].color);
+        if (i === n - 1 && segs.length) avoid.add(segs[0].color);
+        color = this._pickColor(palette, segs, avoid);
+        this._colorMap[uid] = color;
+      }
+      segs.push({ name: it.summary || "(untitled)", uid, color });
+    }
+    this._segments = segs;
 
     // If the displayed winner is gone, clear it.
     if (this._winner && !this._segments.some((s) => s.uid === this._winner.uid)) {
       this._clearResult();
     }
+    this._renderManage();
     this._draw();
   }
 
@@ -407,14 +488,32 @@ class ChoreWheelCard extends HTMLElement {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "chip";
+      btn.dataset.chore = label.toLowerCase();
       btn.textContent = `+ ${label}`;
       btn.addEventListener("click", () => this._quickAdd(label, btn));
       this._quickAddEl.appendChild(btn);
+    }
+    this._updateQuickAddState();
+  }
+
+  // Grey out the chip for any chore already on the list (case-insensitive),
+  // so the same chore can't be added twice.
+  _updateQuickAddState() {
+    if (!this._quickAddEl) return;
+    for (const btn of this._quickAddEl.children) {
+      const inList = this._listNames.has(btn.dataset.chore);
+      btn.disabled = inList;
+      btn.title = inList ? "Already on the list" : "";
     }
   }
 
   async _quickAdd(name, btn) {
     if (!this._hass || !this._config) return;
+    // Don't add a chore that's already on the list (case-insensitive).
+    if (this._listNames.has(name.trim().toLowerCase())) {
+      this._updateQuickAddState();
+      return;
+    }
     if (btn) btn.disabled = true;
     try {
       await this._hass.callService(
@@ -427,6 +526,60 @@ class ChoreWheelCard extends HTMLElement {
     } catch (err) {
       this._showError(`Could not add item: ${err.message || err}`);
     } finally {
+      this._updateQuickAddState();
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Manage / remove chores                                             */
+  /* ------------------------------------------------------------------ */
+
+  // List the current chores with a remove (✕) button each.
+  _renderManage() {
+    if (!this._manageEl || !this._manageBtn) return;
+    const segs = this._segments;
+    this._manageEl.textContent = "";
+    if (!segs.length) {
+      this._manageBtn.style.display = "none";
+      this._manageEl.classList.remove("show");
+      return;
+    }
+    this._manageBtn.style.display = "block";
+    for (const seg of segs) {
+      const row = document.createElement("div");
+      row.className = "manage-row";
+
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = seg.name;
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "del-btn";
+      del.textContent = "✕";
+      del.title = `Remove "${seg.name}"`;
+      del.setAttribute("aria-label", `Remove ${seg.name}`);
+      del.addEventListener("click", () => this._removeItem(seg.uid, del));
+
+      row.append(name, del);
+      this._manageEl.appendChild(row);
+    }
+  }
+
+  async _removeItem(uid, btn) {
+    if (!this._hass || !this._config || !uid) return;
+    if (btn) btn.disabled = true;
+    try {
+      await this._hass.callService(
+        "todo",
+        "remove_item",
+        { item: uid },
+        { entity_id: this._config.entity }
+      );
+      if (this._winner && this._winner.uid === uid) this._clearResult();
+      await this._fetchItems(); // last_updated will also trigger, but be eager
+    } catch (err) {
+      this._showError(`Could not remove item: ${err.message || err}`);
       if (btn) btn.disabled = false;
     }
   }
@@ -542,17 +695,29 @@ class ChoreWheelCard extends HTMLElement {
     return COLOR_FAMILIES[this._config.color_family] || DEFAULT_PALETTE;
   }
 
-  _colorFor(uid) {
-    if (this._colorMap[uid]) return this._colorMap[uid];
-    const palette = this._palette();
-    // Stable hash of the uid → palette index, so a task keeps its colour for
-    // life and removing one never reshuffles the others.
-    const s = String(uid);
-    let h = 0;
-    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-    const color = palette[h % palette.length];
-    this._colorMap[uid] = color;
-    return color;
+  // Pick a colour for a new slice: the least-used palette colour, preferring
+  // one that isn't an adjacent neighbour. This cycles the palette evenly so
+  // colours never clump, and gracefully relaxes the neighbour rule when the
+  // palette is too small to honour it.
+  _pickColor(palette, segs, avoid) {
+    const counts = new Map(palette.map((c) => [c, 0]));
+    for (const s of segs) {
+      if (counts.has(s.color)) counts.set(s.color, counts.get(s.color) + 1);
+    }
+    const leastUsed = (skip) => {
+      let best = null;
+      let bestN = Infinity;
+      for (const c of palette) {
+        if (skip && skip.has(c)) continue;
+        const used = counts.get(c) || 0;
+        if (used < bestN) {
+          bestN = used;
+          best = c;
+        }
+      }
+      return best;
+    };
+    return leastUsed(avoid) || leastUsed(null) || palette[0];
   }
 
   _contrastColor(hex) {
