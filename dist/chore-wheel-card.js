@@ -6,13 +6,35 @@
  * No build step required. Drop into HA as a Lovelace resource.
  */
 
-const CARD_VERSION = "1.1.0";
+const CARD_VERSION = "1.2.0";
 
-const DEFAULT_PALETTE = [
-  "#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4",
-  "#42d4f4", "#f032e6", "#bfef45", "#fabed4", "#469990",
-  "#dcbeff", "#9a6324", "#800000", "#aaffc3", "#808000",
-];
+// Named colour families the user can pick from in the editor. `colors` (a
+// custom hex list) still overrides whatever family is chosen.
+const COLOR_FAMILIES = {
+  rainbow: [
+    "#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4",
+    "#42d4f4", "#f032e6", "#bfef45", "#fabed4", "#469990",
+    "#dcbeff", "#9a6324", "#800000", "#aaffc3", "#808000",
+  ],
+  warm: [
+    "#e6194b", "#f58231", "#ffd60a", "#d35400", "#c0392b",
+    "#e67e22", "#f39c12", "#ff6b6b", "#ff8c42", "#cd6155",
+  ],
+  cool: [
+    "#4363d8", "#3cb44b", "#42d4f4", "#469990", "#911eb4",
+    "#1abc9c", "#2980b9", "#16a085", "#2ecc71", "#8e44ad",
+  ],
+  pastel: [
+    "#ffd1dc", "#c1e1c1", "#bbcdf3", "#ffe5b4", "#e0bbe4",
+    "#b5ead7", "#ffdac1", "#c7ceea", "#f8c8dc", "#d4f0f0",
+  ],
+  earth: [
+    "#8d6e63", "#a1887f", "#827717", "#6d4c41", "#9e9d24",
+    "#5d4037", "#bcaaa4", "#33691e", "#795548", "#c0a16b",
+  ],
+};
+
+const DEFAULT_PALETTE = COLOR_FAMILIES.rainbow;
 
 const mod2pi = (a) => {
   const t = 2 * Math.PI;
@@ -96,13 +118,18 @@ class ChoreWheelCard extends HTMLElement {
       spin_duration: 5,
       strike_action: "complete", // "complete" | "remove"
       show_completed: false,
-      colors: null,
+      color_family: "rainbow",   // a key of COLOR_FAMILIES
+      colors: null,              // custom hex list; overrides color_family
+      quick_chores: [],          // labels offered as one-tap "add to list" chips
       ...config,
     };
+    this._colorMap = {};        // palette may have changed → recompute colours
     this._lastStamp = null;     // force a refetch
     if (this._domReady) {
       this._titleEl.textContent = this._config.title || "";
+      this._renderQuickAdd();
       this._clearResult();
+      this._draw();
     }
   }
 
@@ -202,6 +229,26 @@ class ChoreWheelCard extends HTMLElement {
       }
       .spin-btn:hover:not(:disabled) { transform: scale(1.04); }
       .spin-btn:disabled { opacity: .5; cursor: default; }
+      .quick-add {
+        display: none;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+      }
+      .chip {
+        background: var(--secondary-background-color, #f1f1f1);
+        color: var(--primary-text-color, #333);
+        border: 1px solid var(--divider-color, rgba(0,0,0,.12));
+        border-radius: 999px;
+        padding: 6px 14px;
+        font-size: .95em;
+        font-weight: 500;
+        cursor: pointer;
+        transition: transform .08s ease, filter .2s ease;
+      }
+      .chip:hover:not(:disabled) { filter: brightness(.95); transform: scale(1.04); }
+      .chip:disabled { opacity: .5; cursor: default; }
       .result {
         width: 100%;
         text-align: center;
@@ -251,6 +298,7 @@ class ChoreWheelCard extends HTMLElement {
         <canvas class="confetti"></canvas>
       </div>
       <button class="spin-btn" type="button">Spin the wheel</button>
+      <div class="quick-add"></div>
       <div class="result">
         <div class="label">Your chore is</div>
         <div class="chore"></div>
@@ -268,6 +316,7 @@ class ChoreWheelCard extends HTMLElement {
     this._confCanvas = card.querySelector("canvas.confetti");
     this._confCtx = this._confCanvas.getContext("2d");
     this._spinBtn = card.querySelector(".spin-btn");
+    this._quickAddEl = card.querySelector(".quick-add");
     this._resultEl = card.querySelector(".result");
     this._choreEl = card.querySelector(".chore");
     this._doneBtn = card.querySelector(".done-btn");
@@ -280,6 +329,7 @@ class ChoreWheelCard extends HTMLElement {
 
     this._ro = new ResizeObserver(() => this._resize());
     this._domReady = true;
+    this._renderQuickAdd();
     this._resize();
   }
 
@@ -329,6 +379,52 @@ class ChoreWheelCard extends HTMLElement {
       this._clearResult();
     }
     this._draw();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Quick-add chores                                                   */
+  /* ------------------------------------------------------------------ */
+
+  // Build one chip per configured quick chore. Tapping a chip adds that
+  // chore to the todo list so it lands on the wheel right away.
+  _renderQuickAdd() {
+    if (!this._quickAddEl) return;
+    const chores = Array.isArray(this._config?.quick_chores)
+      ? this._config.quick_chores.filter((c) => c && String(c).trim())
+      : [];
+    this._quickAddEl.textContent = "";
+    if (!chores.length) {
+      this._quickAddEl.style.display = "none";
+      return;
+    }
+    this._quickAddEl.style.display = "flex";
+    for (const name of chores) {
+      const label = String(name).trim();
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chip";
+      btn.textContent = `+ ${label}`;
+      btn.addEventListener("click", () => this._quickAdd(label, btn));
+      this._quickAddEl.appendChild(btn);
+    }
+  }
+
+  async _quickAdd(name, btn) {
+    if (!this._hass || !this._config) return;
+    if (btn) btn.disabled = true;
+    try {
+      await this._hass.callService(
+        "todo",
+        "add_item",
+        { item: name },
+        { entity_id: this._config.entity }
+      );
+      await this._fetchItems(); // last_updated will also trigger, but be eager
+    } catch (err) {
+      this._showError(`Could not add item: ${err.message || err}`);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -435,11 +531,16 @@ class ChoreWheelCard extends HTMLElement {
     return t + "…";
   }
 
+  // Active segment palette: an explicit `colors` list wins, otherwise the
+  // chosen `color_family`, falling back to the rainbow default.
+  _palette() {
+    if (this._config.colors && this._config.colors.length) return this._config.colors;
+    return COLOR_FAMILIES[this._config.color_family] || DEFAULT_PALETTE;
+  }
+
   _colorFor(uid) {
     if (this._colorMap[uid]) return this._colorMap[uid];
-    const palette = (this._config.colors && this._config.colors.length)
-      ? this._config.colors
-      : DEFAULT_PALETTE;
+    const palette = this._palette();
     // Stable hash of the uid → palette index, so a task keeps its colour for
     // life and removing one never reshuffles the others.
     const s = String(uid);
@@ -524,9 +625,7 @@ class ChoreWheelCard extends HTMLElement {
   /* ------------------------------------------------------------------ */
 
   _burstConfetti() {
-    const palette = (this._config.colors && this._config.colors.length)
-      ? this._config.colors
-      : DEFAULT_PALETTE;
+    const palette = this._palette();
     const size = this._size;
     const cx = size / 2;
     const cy = size / 2;
@@ -664,6 +763,22 @@ class ChoreWheelCardEditor extends HTMLElement {
         },
       },
       { name: "show_completed", selector: { boolean: {} } },
+      {
+        name: "color_family",
+        selector: {
+          select: {
+            mode: "dropdown",
+            options: [
+              { value: "rainbow", label: "Rainbow" },
+              { value: "warm", label: "Warm" },
+              { value: "cool", label: "Cool" },
+              { value: "pastel", label: "Pastel" },
+              { value: "earth", label: "Earth" },
+            ],
+          },
+        },
+      },
+      { name: "quick_chores", selector: { text: { multiple: true } } },
     ];
     this._form.computeLabel = (s) => {
       const labels = {
@@ -672,6 +787,8 @@ class ChoreWheelCardEditor extends HTMLElement {
         spin_duration: "Spin duration",
         strike_action: "When marked done",
         show_completed: "Show completed chores too",
+        color_family: "Colour family",
+        quick_chores: "Quick-add chores",
       };
       return labels[s.name] || s.name;
     };
