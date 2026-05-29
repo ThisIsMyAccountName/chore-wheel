@@ -91,7 +91,8 @@ class ChoreWheelCard extends HTMLElement {
     this._colorMap = {};     // uid -> color, stable across removals
     this._confetti = [];
     this._confAnim = null;
-    this._listNames = new Set(); // lowercased summaries currently on the list
+    this._listNames = new Set();    // lowercased summaries currently on the list
+    this._listUidByName = new Map(); // lowercased summary -> uid, for toggling
   }
 
   /* ------------------------------------------------------------------ */
@@ -254,6 +255,11 @@ class ChoreWheelCard extends HTMLElement {
       }
       .chip:hover:not(:disabled) { filter: brightness(.95); transform: scale(1.04); }
       .chip:disabled { opacity: .5; cursor: default; }
+      .chip.added {
+        background: var(--success-color, #43a047);
+        color: #fff;
+        border-color: transparent;
+      }
       .result {
         width: 100%;
         text-align: center;
@@ -413,13 +419,18 @@ class ChoreWheelCard extends HTMLElement {
         entity_id: this._config.entity,
       });
       const items = (res && res.items) || [];
-      // Track every summary on the list (completed or not) so quick-add chips
-      // can be disabled for chores that already exist.
-      this._listNames = new Set(
-        items
-          .map((i) => String(i.summary || "").trim().toLowerCase())
-          .filter(Boolean)
-      );
+      // Track every summary on the list (completed or not) and its uid, so a
+      // quick-chore chip can show whether it's already added and toggle it.
+      this._listNames = new Set();
+      this._listUidByName = new Map();
+      for (const i of items) {
+        const key = String(i.summary || "").trim().toLowerCase();
+        if (!key) continue;
+        this._listNames.add(key);
+        if (!this._listUidByName.has(key)) {
+          this._listUidByName.set(key, i.uid || i.summary);
+        }
+      }
       this._items = this._config.show_completed
         ? items
         : items.filter((i) => i.status !== "completed");
@@ -470,8 +481,8 @@ class ChoreWheelCard extends HTMLElement {
   /* Quick-add chores                                                   */
   /* ------------------------------------------------------------------ */
 
-  // Build one chip per configured quick chore. Tapping a chip adds that
-  // chore to the todo list so it lands on the wheel right away.
+  // Build one chip per configured quick chore. Tapping a chip toggles that
+  // chore on/off the todo list, so it appears on (or leaves) the wheel.
   _renderQuickAdd() {
     if (!this._quickAddEl) return;
     const chores = Array.isArray(this._config?.quick_chores)
@@ -489,21 +500,36 @@ class ChoreWheelCard extends HTMLElement {
       btn.type = "button";
       btn.className = "chip";
       btn.dataset.chore = label.toLowerCase();
-      btn.textContent = `+ ${label}`;
-      btn.addEventListener("click", () => this._quickAdd(label, btn));
+      btn.dataset.label = label;
+      btn.addEventListener("click", () => this._toggleQuickChore(label, btn));
       this._quickAddEl.appendChild(btn);
     }
     this._updateQuickAddState();
   }
 
-  // Grey out the chip for any chore already on the list (case-insensitive),
-  // so the same chore can't be added twice.
+  // Reflect, on each chip, whether its chore is currently on the list
+  // (case-insensitive): added chips are highlighted and remove on click,
+  // others add on click.
   _updateQuickAddState() {
     if (!this._quickAddEl) return;
     for (const btn of this._quickAddEl.children) {
       const inList = this._listNames.has(btn.dataset.chore);
-      btn.disabled = inList;
-      btn.title = inList ? "Already on the list" : "";
+      btn.classList.toggle("added", inList);
+      btn.textContent = `${inList ? "✓" : "+"} ${btn.dataset.label}`;
+      btn.title = inList
+        ? "On the list — click to remove"
+        : "Click to add to the list";
+    }
+  }
+
+  // Add the chore if it's missing, otherwise remove the matching item.
+  _toggleQuickChore(name, btn) {
+    if (!this._hass || !this._config) return;
+    const uid = this._listUidByName.get(name.trim().toLowerCase());
+    if (uid) {
+      this._removeItem(uid, btn);
+    } else {
+      this._quickAdd(name, btn);
     }
   }
 
@@ -526,6 +552,7 @@ class ChoreWheelCard extends HTMLElement {
     } catch (err) {
       this._showError(`Could not add item: ${err.message || err}`);
     } finally {
+      if (btn) btn.disabled = false;
       this._updateQuickAddState();
     }
   }
@@ -580,7 +607,9 @@ class ChoreWheelCard extends HTMLElement {
       await this._fetchItems(); // last_updated will also trigger, but be eager
     } catch (err) {
       this._showError(`Could not remove item: ${err.message || err}`);
+    } finally {
       if (btn) btn.disabled = false;
+      this._updateQuickAddState();
     }
   }
 

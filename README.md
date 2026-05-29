@@ -17,8 +17,8 @@ it off the list.
 - 🎯 Reads chores live from any `todo.*` entity (Local To-do, Shopping List, etc.)
 - 🎡 Smooth, weighted-fair carnival wheel with a real spin animation
 - ✅ "Mark done" button completes (or removes) the chosen item from the list
-- ➕ One-tap **quick-add chips** to drop common chores onto the wheel (greyed out
-  when the chore is already on the list, so it never appears twice)
+- ➕ One-tap **quick-chore chips** that toggle a chore on/off the wheel — tap to
+  add, tap again to remove (a chip is highlighted while its chore is on the list)
 - 🗑️ **Manage chores** panel to remove any chore from the list
 - 🔄 Auto-updates when the todo list changes
 - 🎨 Colour families (or a custom palette), customisable title and spin duration
@@ -82,7 +82,7 @@ spin_duration: 5             # seconds the spin animation runs (1–20)
 strike_action: complete      # "complete" (mark done) or "remove" (delete item)
 show_completed: false        # also include already-completed items on the wheel
 color_family: rainbow        # classic | rainbow | warm | cool | pastel | earth
-quick_chores:                # one-tap chips that add a chore to the list
+quick_chores:                # one-tap chips that toggle a chore on/off the list
   - Dishes
   - Vacuum
   - Take out trash
@@ -102,7 +102,7 @@ colors:                      # optional custom palette — overrides color_famil
 | `strike_action`  | string   | `complete`     | What "Mark done" does: `complete` (mark item done) or `remove`.   |
 | `show_completed` | boolean  | `false`        | Include completed items on the wheel as well.                     |
 | `color_family`   | string   | `rainbow`      | Built-in palette: `classic`, `rainbow`, `warm`, `cool`, `pastel` or `earth`. |
-| `quick_chores`   | list     | `[]`           | Chore labels shown as one-tap chips that add the chore to the list.|
+| `quick_chores`   | list     | `[]`           | Chore labels shown as chips that toggle the chore on/off the list. |
 | `colors`         | list     | built-in       | Custom hex palette, cycled in order. Overrides `color_family`.    |
 
 ---
@@ -117,10 +117,10 @@ colors:                      # optional custom palette — overrides color_famil
 - **Mark done** calls `todo.update_item` (status `completed`) or
   `todo.remove_item`, then re-reads the list — so the finished chore drops off
   the wheel.
-- **Quick-add chips** call `todo.add_item` with the chip's label, then re-read
-  the list — so the new chore appears on the wheel immediately. A chip is greyed
-  out (and won't add again) while a matching chore — comparing names
-  case-insensitively — is already on the list.
+- **Quick-chore chips** toggle a chore: if it isn't on the list the chip calls
+  `todo.add_item`; if a matching chore — comparing names case-insensitively — is
+  already there, the chip is highlighted and instead calls `todo.remove_item`.
+  Either way the list is re-read so the wheel updates immediately.
 - **Manage chores** lists the current chores; the ✕ button calls
   `todo.remove_item` and re-reads the list, dropping the chore off the wheel.
 
